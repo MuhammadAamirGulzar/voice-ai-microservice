@@ -1,0 +1,17 @@
+.git
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+build/
+dist/
+logs/
+.env
+env.sh
+google-credentials.json
+.DS_Store
+*.log

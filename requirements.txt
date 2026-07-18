@@ -1,0 +1,45 @@
+# Core Dependencies
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.10.6
+pydantic-settings==2.1.0
+python-dotenv==1.0.0
+
+# HTTP Client
+aiohttp==3.11.12
+httpx==0.28.1
+
+# Logging
+loguru==0.7.3
+
+# Data Processing
+python-multipart==0.0.6
+
+# Pipecat AI - Voice Pipeline Framework with WebRTC
+# SmallWebRTC requires the webrtc extra
+pipecat-ai[openai,google,assemblyai,silero,webrtc]==0.0.98
+
+# LLM Providers
+openai==2.15.0
+groq==1.0.0
+
+# STT - AssemblyAI
+assemblyai==0.48.4
+
+# TTS - Google Cloud
+google-cloud-texttospeech==2.33.0
+
+# WebRTC support
+aioice==0.10.2
+aiortc==1.14.0
+
+# Audio Processing
+numpy==2.2.2
+scipy==1.17.0
+av>=14.0.0,<17.0.0
+
+# Development
+pytest==7.4.3
+pytest-asyncio==0.23.2
+black==23.12.1
+ruff==0.1.9

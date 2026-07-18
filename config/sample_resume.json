@@ -1,0 +1,69 @@
+{
+  "candidate_id": "test_001",
+  "name": "Sarah Johnson",
+  "email": "sarah.johnson@email.com",
+  "phone": "+1-555-0123",
+  "location": "San Francisco, CA",
+  "summary": "Full-stack software engineer with 5 years of experience building scalable web applications. Specialized in React, Node.js, and cloud infrastructure. Passionate about clean code and user experience.",
+  "experience": [
+    {
+      "company": "TechCorp Inc",
+      "position": "Senior Software Engineer",
+      "duration": "Jan 2021 - Present",
+      "location": "San Francisco, CA",
+      "responsibilities": [
+        "Led development of real-time collaboration features using WebSockets and Redis",
+        "Architected microservices infrastructure on AWS (ECS, Lambda, API Gateway)",
+        "Mentored 3 junior developers and conducted code reviews",
+        "Reduced API response time by 60% through database query optimization"
+      ],
+      "technologies": ["React", "Node.js", "PostgreSQL", "AWS", "Docker", "Redis"]
+    },
+    {
+      "company": "StartupXYZ",
+      "position": "Full Stack Developer",
+      "duration": "Jun 2019 - Dec 2020",
+      "location": "Remote",
+      "responsibilities": [
+        "Built customer-facing dashboard using React and Material-UI",
+        "Developed RESTful APIs with Express.js and MongoDB",
+        "Implemented CI/CD pipeline with GitHub Actions",
+        "Improved test coverage from 40% to 85%"
+      ],
+      "technologies": ["React", "Express.js", "MongoDB", "Jest", "GitHub Actions"]
+    }
+  ],
+  "education": [
+    {
+      "degree": "Bachelor of Science in Computer Science",
+      "institution": "University of California, Berkeley",
+      "graduation_year": 2019,
+      "gpa": "3.7/4.0"
+    }
+  ],
+  "skills": {
+    "languages": ["JavaScript", "TypeScript", "Python", "SQL"],
+    "frontend": ["React", "Vue.js", "HTML/CSS", "Tailwind CSS"],
+    "backend": ["Node.js", "Express.js", "FastAPI", "GraphQL"],
+    "databases": ["PostgreSQL", "MongoDB", "Redis"],
+    "cloud": ["AWS", "Docker", "Kubernetes"],
+    "tools": ["Git", "Jest", "Webpack", "CI/CD"]
+  },
+  "projects": [
+    {
+      "name": "Open Source Contribution - React Query",
+      "description": "Contributed bug fixes and documentation improvements",
+      "url": "https://github.com/tanstack/react-query"
+    },
+    {
+      "name": "Personal Project - DevTracker",
+      "description": "Built a productivity tracking app for developers with GitHub integration",
+      "technologies": ["Next.js", "Prisma", "PostgreSQL"]
+    }
+  ],
+  "certifications": [
+    "AWS Certified Solutions Architect - Associate",
+    "MongoDB Certified Developer"
+  ],
+  "parsed_text": "Sarah Johnson is a Full-stack software engineer with 5 years of experience. Currently Senior Software Engineer at TechCorp Inc where she leads real-time collaboration features development and has reduced API response time by 60%. Previously worked at StartupXYZ as Full Stack Developer. Strong skills in React, Node.js, PostgreSQL, AWS, and Docker. Berkeley CS grad with AWS and MongoDB certifications."
+}
