@@ -10,7 +10,7 @@ This repository contains a high-level technical overview of a production-grade, 
 
 A sophisticated, scalable voice microservice providing real-time speech-to-text, text-to-speech, and interactive voice conversations with external AI agents. The system handles multi-tenant workflows across multiple business domains (recruitment interviews, education tutoring, visa consultations, general voice interactions).
 
-**Scope**: Production deployment handling 1,000+ concurrent sessions; sub-500ms latency for speech recognition and response generation; 99.2% availability SLA.
+**Scope**: Production deployment handling multiple concurrent sessions; sub-500ms latency for speech recognition and response generation; 99.2% availability SLA.
 
 ---
 
