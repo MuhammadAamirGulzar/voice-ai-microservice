@@ -64,9 +64,18 @@ class Settings(BaseSettings):
         description="Number of retry attempts for failed AI Layer requests"
     )
     ai_layer_api_key: str = Field(
-        default="", 
+        default="",
         alias="AI_LAYER_API_KEY",
         description="API key for AI Layer authentication (if required)"
+    )
+    ai_layer_voice_timeout_seconds: float = Field(
+        default=10.0,
+        alias="AI_LAYER_VOICE_TIMEOUT_SECONDS",
+        description=(
+            "Timeout for AI Layer requests made during a live voice turn. "
+            "Kept much lower than ai_layer_timeout_seconds: a caller hearing "
+            "silence gives up long before a batch client would."
+        )
     )
     
     # ==========================================================================
@@ -121,8 +130,20 @@ class Settings(BaseSettings):
     enable_detailed_logging: bool = Field(default=True, alias="ENABLE_DETAILED_LOGGING")
     
     # ==========================================================================
+    # Session lifecycle guards
+    # ==========================================================================
+    # Sessions created via /start but never connected are reaped after this.
+    max_pending_session_minutes: int = Field(default=10, alias="MAX_PENDING_SESSION_MINUTES")
+    session_cleanup_interval_seconds: int = Field(default=60, alias="SESSION_CLEANUP_INTERVAL_SECONDS")
+
+    # ==========================================================================
     # Rate Limiting & Security
     # ==========================================================================
+    # Service-to-service auth: when set, /api/* requires this in X-API-Key.
+    api_key: str = Field(default="", alias="VOICE_API_KEY")
+    # Comma-separated allowed origins; "*" (default) disables credentials.
+    cors_origins: str = Field(default="*", alias="CORS_ORIGINS")
+    rate_limit_enabled: bool = Field(default=False, alias="RATE_LIMIT_ENABLED")
     rate_limit_requests_per_minute: int = Field(default=60, alias="RATE_LIMIT_REQUESTS_PER_MINUTE")
     enable_request_validation: bool = Field(default=True, alias="ENABLE_REQUEST_VALIDATION")
 

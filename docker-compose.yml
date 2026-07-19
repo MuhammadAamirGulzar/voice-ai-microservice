@@ -9,20 +9,19 @@ services:
       - .env
     environment:
       PUBLIC_IP: ${PUBLIC_IP:-}
+      HOST: 0.0.0.0
     volumes:
       - ./logs:/app/logs
       - ./google-credentials.json:/app/google-credentials.json:ro
     ports:
       - "18020:8000"
+      # WebRTC media (UDP). NOTE: aiortc binds ephemeral ports by default;
+      # for NAT'd deployments run with network_mode: host or put a TURN
+      # server in front — this mapped range alone is not sufficient.
       - "51000-51100:51000-51100/udp"
     restart: unless-stopped
-
-  frontend:
-    build:
-      context: .
-      dockerfile: frontend/Dockerfile
-    depends_on:
-      - backend
-    ports:
-      - "127.0.0.1:28021:80"
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3

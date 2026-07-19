@@ -10,8 +10,23 @@ Features:
 from loguru import logger
 from pathlib import Path
 import json
+import re
 from datetime import datetime
 from typing import Dict, List, Optional, Any
+
+_SAFE_ID = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def safe_id(value: Optional[str], fallback: str = "unknown") -> str:
+    """
+    Sanitize client-supplied identifiers before they touch the filesystem.
+    organisation_id and session_id come from API requests; without this a
+    value like "../../etc" writes or reads outside the transcript root.
+    """
+    if not value:
+        return fallback
+    cleaned = _SAFE_ID.sub("_", str(value))[:128].strip("._") or fallback
+    return cleaned
 
 
 class TranscriptLogger:
@@ -88,11 +103,11 @@ class TranscriptLogger:
     def _build_output_path(self) -> Path:
         """Build output path based on multi-tenant context."""
         path = self.base_output_dir
-        
-        # Add organization folder if available
+
+        # Add organization folder if available (sanitized — client input)
         if self.organisation_id:
-            path = path / self.organisation_id
-        
+            path = path / safe_id(self.organisation_id)
+
         return path
     
     def add_message(self, speaker: str, text: str, metadata: Optional[Dict] = None):
@@ -177,7 +192,7 @@ class TranscriptLogger:
     def _write_to_file(self):
         """Write transcript to JSON file."""
         try:
-            filename = f"session_{self.session_id}.json"
+            filename = f"session_{safe_id(self.session_id)}.json"
             filepath = self.output_dir / filename
             
             with open(filepath, 'w', encoding='utf-8') as f:
@@ -222,14 +237,10 @@ def load_transcript(
         Transcript dictionary or None if not found
     """
     try:
-        base_path = Path(transcripts_dir)
-        
-        # Try organized path first
-        if organisation_id:
-            filepath = base_path / organisation_id / f"*_{session_id}.json"
-        else:
-            filepath = base_path / f"**/*_{session_id}.json"
-        
+        # Sanitize before building a glob from client input — an id like
+        # "../../x" must not escape the transcript root.
+        session_id = safe_id(session_id)
+
         # Search for file
         matches = list(Path(transcripts_dir).glob(f"**/*{session_id}.json"))
         
@@ -267,9 +278,9 @@ def list_transcripts(
         if not base_path.exists():
             return []
         
-        # Build search pattern
+        # Build search pattern (org id is client input — sanitize)
         if organisation_id:
-            search_path = base_path / organisation_id
+            search_path = base_path / safe_id(organisation_id)
             pattern = "*.json"
         else:
             search_path = base_path

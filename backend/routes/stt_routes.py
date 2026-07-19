@@ -29,7 +29,9 @@ def init_stt_service(assemblyai_api_key: str):
 def get_stt_service() -> STTService:
     """Get the STT service instance."""
     if _stt_service is None:
-        raise HTTPException(status_code=500, detail="STT service not initialized")
+        # 503, not 500: the service is deliberately unconfigured (missing
+        # API key), and clients/load balancers should treat it as such.
+        raise HTTPException(status_code=503, detail="STT service not initialized")
     return _stt_service
 
 
@@ -87,9 +89,13 @@ async def speech_to_text(request: STTRequest):
             processing_time_ms=round(result.processing_time_ms, 1),
             cost_usd=result.estimated_cost,
         )
-        
+
+    except HTTPException:
+        raise   # keep intended status codes (400 missing audio, 503 no service)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"STT failed: {str(e)}")
 

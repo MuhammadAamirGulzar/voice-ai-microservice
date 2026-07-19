@@ -20,7 +20,10 @@ from typing import Optional, Tuple
 from loguru import logger
 from pipecat.frames.frames import (
     Frame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
     LLMMessagesFrame,
+    StartInterruptionFrame,
     TextFrame,
     TranscriptionFrame,
 )
@@ -53,14 +56,22 @@ ICE_SERVERS = [
 class AILayerProcessor(FrameProcessor):
     """
     Processor that forwards transcribed text to AI Layer and receives responses.
-    
+
     Replaces the local LLM in the pipeline when AI Layer is configured.
-    Handles:
-    - Sending user messages to AI Layer
-    - Receiving AI responses
-    - Converting responses to TextFrames for TTS
+
+    Concurrency contract (matters for voice):
+    - process_frame() must NEVER block: the AI Layer request runs in its own
+      task. Blocking here stalls every frame behind it — including the audio
+      the transport is trying to play — for up to the full request timeout.
+    - Interruptions cancel the in-flight request: when the user speaks over
+      the assistant, a stale response arriving seconds later must not be
+      spoken. Each request carries a turn number; only the current turn's
+      response is pushed.
+    - Responses are wrapped in LLMFullResponseStart/End frames so the
+      assistant transcript processor and metrics see them exactly like a
+      local LLM's output. (Bare TextFrames are invisible to both.)
     """
-    
+
     def __init__(
         self,
         session: Session,
@@ -69,41 +80,61 @@ class AILayerProcessor(FrameProcessor):
         super().__init__()
         self.session = session
         self.transcript_logger = transcript_logger
-        self._pending_text = ""
-        
+        self._turn = 0
+        self._request_task: Optional[asyncio.Task] = None
+
         logger.info(f"AILayerProcessor initialized for session: {session.session_id}")
-    
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         """Process incoming frames."""
         await super().process_frame(frame, direction)
-        
-        # Handle transcription frames (user speech converted to text)
-        if isinstance(frame, TranscriptionFrame):
+
+        if isinstance(frame, StartInterruptionFrame):
+            # User barged in: whatever the AI Layer is computing is stale.
+            self._cancel_inflight()
+            await self.push_frame(frame, direction)
+        elif isinstance(frame, TranscriptionFrame):
             text = frame.text.strip()
             if text:
                 logger.debug(f"AILayer received transcript: {text[:50]}...")
-                
-                # Get AI response
-                response = await self._get_ai_response(text)
-                
-                if response:
-                    # Send response as TextFrame for TTS
-                    await self.push_frame(TextFrame(text=response))
+                self._turn += 1
+                self._cancel_inflight()
+                self._request_task = asyncio.create_task(
+                    self._respond(text, self._turn))
         else:
             # Pass through other frames
             await self.push_frame(frame, direction)
-    
+
+    def _cancel_inflight(self):
+        if self._request_task and not self._request_task.done():
+            self._request_task.cancel()
+
+    async def _respond(self, user_message: str, turn: int):
+        """Fetch the AI response off the frame path and push it when ready."""
+        try:
+            response = await self._get_ai_response(user_message)
+        except asyncio.CancelledError:
+            logger.debug(f"AI Layer request cancelled (turn {turn})")
+            return
+        if not response or turn != self._turn:
+            # A newer utterance superseded this one while we waited.
+            return
+        await self.push_frame(LLMFullResponseStartFrame())
+        await self.push_frame(TextFrame(text=response))
+        await self.push_frame(LLMFullResponseEndFrame())
+
     async def _get_ai_response(self, user_message: str) -> Optional[str]:
-        """Get response from AI Layer."""
+        """Get response from AI Layer (voice-tuned timeout, single retry)."""
         try:
             from backend.services.ai_layer_client import (
                 get_ai_layer_client,
                 AILayerRequest,
                 AILayerError,
             )
-            
+            from config.settings import get_settings
+
             client = get_ai_layer_client()
-            
+
             request = AILayerRequest(
                 organisation_id=self.session.context.organisation_id or "",
                 agent_id=self.session.context.agent_id or "",
@@ -111,16 +142,22 @@ class AILayerProcessor(FrameProcessor):
                 session_id=self.session.session_id,
                 message=user_message,
             )
-            
-            response = await client.send_message(request)
-            
+
+            response = await client.send_message(
+                request,
+                timeout_s=get_settings().ai_layer_voice_timeout_seconds,
+                max_retries=1,
+            )
+
             logger.debug(
                 f"AI Layer response | session={self.session.session_id} | "
                 f"latency={response.processing_time_ms:.0f}ms"
             )
-            
+
             return response.text
-            
+
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"AI Layer error: {e}")
             # Return a graceful fallback message

@@ -181,13 +181,21 @@ class STTService:
             transcript_data = await resp.json()
             transcript_id = transcript_data["id"]
         
-        # Step 3: Poll for completion
+        # Step 3: Poll for completion — with a hard deadline. The per-request
+        # timeout does not bound the loop: a job stuck in "processing" would
+        # otherwise hold this coroutine (and a semaphore slot) forever.
         poll_url = f"https://api.assemblyai.com/v2/transcript/{transcript_id}"
+        deadline = time.monotonic() + self.timeout.total
+        poll_interval = 0.5
         while True:
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"AssemblyAI transcription {transcript_id} did not finish "
+                    f"within {self.timeout.total:.0f}s")
             async with session.get(poll_url, headers=headers) as resp:
                 result = await resp.json()
                 status = result["status"]
-                
+
                 if status == "completed":
                     duration = result.get("audio_duration", 0)
                     return STTResult(
@@ -200,8 +208,10 @@ class STTService:
                     )
                 elif status == "error":
                     raise RuntimeError(f"AssemblyAI error: {result.get('error')}")
-                
-                await asyncio.sleep(0.5)
+
+                await asyncio.sleep(poll_interval)
+                # Long jobs don't need sub-second polling; ease off.
+                poll_interval = min(poll_interval * 1.5, 3.0)
     
     async def close(self):
         """Close the HTTP session."""

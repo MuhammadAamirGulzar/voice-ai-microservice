@@ -12,9 +12,13 @@ Supports multiple business cases:
 - Visa processing consultations
 - General voice interactions
 """
+import asyncio
+import hmac
 import json
 import os
 import sys
+import time
+from collections import deque
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -115,34 +119,90 @@ WebRTC-based voice conversations with AI Layer integration.
 # Middleware
 # =============================================================================
 
-# CORS
+# CORS — origins are configurable; wildcard cannot legally be combined with
+# credentials (browsers reject it), so credentials turn on only when the
+# deployment pins real origins.
+_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()] or ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_origins != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Paths that must stay open for load balancers, docs, and browsers.
+_OPEN_PATHS = {"/", "/health", "/health/deep", "/docs", "/redoc", "/openapi.json"}
+
+
+@app.middleware("http")
+async def require_api_key(request: Request, call_next):
+    """
+    Service-to-service auth: when VOICE_API_KEY is set, every /api/* request
+    must carry it in X-API-Key. Without this, anyone who can reach the
+    service can burn STT/TTS spend and read any tenant's transcripts.
+    """
+    if settings.api_key and request.url.path.startswith("/api"):
+        provided = request.headers.get("X-API-Key", "")
+        if not hmac.compare_digest(provided, settings.api_key):
+            return JSONResponse(
+                status_code=401,
+                content={"error": "Invalid or missing X-API-Key",
+                         "status_code": 401,
+                         "path": request.url.path},
+            )
+    return await call_next(request)
+
+
+# Sliding-window rate limiter (per client IP). Opt-in: RATE_LIMIT_ENABLED=1.
+# In-memory by design — this protects one instance from abuse; cross-instance
+# fairness belongs in the gateway in front of a scaled deployment.
+_rate_windows: dict = {}
+
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    if (settings.rate_limit_enabled
+            and request.url.path.startswith("/api")
+            and request.url.path not in _OPEN_PATHS):
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.monotonic()
+        window = _rate_windows.setdefault(client_ip, deque())
+        while window and now - window[0] > 60.0:
+            window.popleft()
+        if len(window) >= settings.rate_limit_requests_per_minute:
+            return JSONResponse(
+                status_code=429,
+                content={"error": "Rate limit exceeded; retry shortly",
+                         "status_code": 429,
+                         "path": request.url.path},
+                headers={"Retry-After": "10"},
+            )
+        window.append(now)
+        # Drop idle IPs so the map can't grow unbounded.
+        if len(_rate_windows) > 10000:
+            for ip in [ip for ip, w in _rate_windows.items() if not w][:5000]:
+                _rate_windows.pop(ip, None)
+    return await call_next(request)
 
 
 # Request logging middleware
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     """Log all incoming requests for debugging."""
-    import time
     start_time = time.time()
-    
+
     # Skip logging for static files and health checks
     if request.url.path.startswith("/static") or request.url.path == "/health":
         return await call_next(request)
-    
+
     logger.debug(f"→ {request.method} {request.url.path}")
-    
+
     response = await call_next(request)
-    
+
     duration = (time.time() - start_time) * 1000
     logger.debug(f"← {request.method} {request.url.path} | {response.status_code} | {duration:.0f}ms")
-    
+
     return response
 
 
@@ -213,6 +273,31 @@ async def health_check():
     }
 
 
+@app.get("/health/deep")
+async def deep_health_check():
+    """
+    Dependency-level health: actually pings the AI Layer. Kept separate
+    from /health so load-balancer probes stay cheap and local.
+    """
+    from backend.services.ai_layer_client import get_ai_layer_client
+
+    ai_layer = {"status": "unknown"}
+    try:
+        ai_layer = await get_ai_layer_client().health_check()
+    except Exception as e:
+        ai_layer = {"status": "error", "error": str(e)}
+
+    healthy = ai_layer.get("status") == "healthy" or settings.use_local_llm
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={
+            "status": "healthy" if healthy else "degraded",
+            "ai_layer": ai_layer,
+            "use_local_llm": settings.use_local_llm,
+        },
+    )
+
+
 @app.get("/api/config")
 async def get_config():
     """Get client configuration."""
@@ -244,11 +329,14 @@ async def get_stats():
     """Get service statistics."""
     from backend.services.session_manager import get_session_manager
     from backend.processors.transcript_logger import get_transcript_stats
-    
+
     session_manager = get_session_manager()
     session_stats = session_manager.get_stats()
-    transcript_stats = get_transcript_stats(settings.transcript_dir)
-    
+    # Scans and parses every transcript on disk — run it off the event loop
+    # so a large transcript store can't stall live audio sessions.
+    transcript_stats = await asyncio.to_thread(
+        get_transcript_stats, settings.transcript_dir)
+
     return {
         "sessions": session_stats,
         "transcripts": transcript_stats,
@@ -314,17 +402,18 @@ async def list_transcripts(
 ):
     """
     List saved session transcripts.
-    
+
     Optionally filter by organization.
     """
     from backend.processors.transcript_logger import list_transcripts as get_transcripts
-    
-    transcripts = get_transcripts(
-        transcripts_dir=settings.transcript_dir,
-        organisation_id=organisation_id,
-        limit=limit,
+
+    transcripts = await asyncio.to_thread(
+        get_transcripts,
+        settings.transcript_dir,
+        organisation_id,
+        limit,
     )
-    
+
     return {"count": len(transcripts), "transcripts": transcripts}
 
 
@@ -332,12 +421,13 @@ async def list_transcripts(
 async def get_transcript(session_id: str):
     """Get transcript for a specific session."""
     from backend.processors.transcript_logger import load_transcript
-    
-    transcript = load_transcript(session_id, settings.transcript_dir)
-    
+
+    transcript = await asyncio.to_thread(
+        load_transcript, session_id, settings.transcript_dir)
+
     if not transcript:
         raise HTTPException(status_code=404, detail="Transcript not found")
-    
+
     return transcript
 
 
@@ -387,8 +477,27 @@ async def startup_event():
     logger.info("   ├── STT:    POST /api/stt, /api/stt/upload")
     logger.info("   ├── TTS:    POST /api/tts, /api/tts/audio")
     logger.info("   └── Legacy: POST /api/conversation/start, /connect")
+    # Session reaper: closes never-connected sessions and enforces the max
+    # call duration. Without it both leak memory and provider spend forever.
+    async def _session_reaper():
+        from backend.services.session_manager import get_session_manager
+        while True:
+            await asyncio.sleep(settings.session_cleanup_interval_seconds)
+            try:
+                reaped = await get_session_manager().cleanup_stale_sessions(
+                    max_pending_minutes=settings.max_pending_session_minutes,
+                    max_duration_minutes=settings.max_session_duration_minutes,
+                )
+                if reaped:
+                    logger.info(f"Session reaper closed {reaped} stale session(s)")
+            except Exception as e:
+                logger.error(f"Session reaper error: {e}")
+
+    app.state.session_reaper = asyncio.create_task(_session_reaper())
+
     logger.info("")
     logger.info(f"   Mode: {'Local LLM' if settings.use_local_llm else 'AI Layer'}")
+    logger.info(f"   Auth: {'X-API-Key required on /api/*' if settings.api_key else 'OPEN (set VOICE_API_KEY in production)'}")
     logger.info(f"   Debug: {settings.debug}")
     logger.info("=" * 70)
 
@@ -397,7 +506,11 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup on shutdown."""
     logger.info("Shutting down Voice Microservice...")
-    
+
+    reaper = getattr(app.state, "session_reaper", None)
+    if reaper is not None:
+        reaper.cancel()
+
     # Close all active sessions
     from backend.services.session_manager import get_session_manager
     

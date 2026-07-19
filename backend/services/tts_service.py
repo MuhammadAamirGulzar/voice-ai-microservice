@@ -102,6 +102,7 @@ class TTSService:
         timeout_seconds: float = 30.0,
         enable_cache: bool = True,
         max_cache_size: int = 500,
+        max_cache_bytes: int = 100 * 1024 * 1024,
     ):
         self.google_credentials_path = google_credentials_path
         self.timeout = timeout_seconds
@@ -109,6 +110,11 @@ class TTSService:
         self._google_client = None
         self._enable_cache = enable_cache
         self._max_cache_size = max_cache_size
+        # Entries hold whole audio clips (often hundreds of KB each), so the
+        # cache is bounded by bytes, not just entry count — 500 uncapped
+        # entries could silently hold hundreds of MB.
+        self._max_cache_bytes = max_cache_bytes
+        self._cache_bytes = 0
         self._cache: dict = {}
         
         # Set credentials env var if provided
@@ -153,7 +159,9 @@ class TTSService:
             cache_key = self._get_cache_key(request)
             if cache_key in self._cache:
                 self.cache_hits += 1
-                cached = self._cache[cache_key]
+                # LRU touch: move to the back so hot entries survive eviction.
+                cached = self._cache.pop(cache_key)
+                self._cache[cache_key] = cached
                 cached.processing_time_ms = (time.perf_counter() - start_time) * 1000
                 cached.from_cache = True
                 logger.debug(f"🔊 TTS cache hit: {len(request.text)} chars")
@@ -260,15 +268,24 @@ class TTSService:
         return hashlib.md5(key_parts.encode()).hexdigest()
     
     def _add_to_cache(self, key: str, result: TTSResult):
-        """Add to cache with size limit (FIFO eviction)."""
-        if len(self._cache) >= self._max_cache_size:
+        """Add to cache, evicting least-recently-used entries to stay under
+        both the entry-count and total-byte limits."""
+        entry_bytes = len(result.audio_base64)
+        if entry_bytes > self._max_cache_bytes:
+            return  # single clip larger than the whole budget — don't cache
+        while self._cache and (
+                len(self._cache) >= self._max_cache_size
+                or self._cache_bytes + entry_bytes > self._max_cache_bytes):
             oldest_key = next(iter(self._cache))
-            del self._cache[oldest_key]
+            evicted = self._cache.pop(oldest_key)
+            self._cache_bytes -= len(evicted.audio_base64)
         self._cache[key] = result
-    
+        self._cache_bytes += entry_bytes
+
     def clear_cache(self):
         """Clear the response cache."""
         self._cache.clear()
+        self._cache_bytes = 0
         logger.info("TTS cache cleared")
     
     async def close(self):
@@ -285,6 +302,7 @@ class TTSService:
             "cache_hits": self.cache_hits,
             "cache_hit_rate": round(self.cache_hits / max(1, total_with_cache), 3),
             "cache_size": len(self._cache),
+            "cache_bytes": self._cache_bytes,
         }
     
     @staticmethod

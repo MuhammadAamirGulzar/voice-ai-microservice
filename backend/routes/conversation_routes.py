@@ -152,16 +152,23 @@ async def connect_session(request: SessionConnectRequest):
         
         # Update session status
         session_manager.update_session_status(
-            session.session_id, 
+            session.session_id,
             SessionStatus.CONNECTING
         )
-        
-        # Create pipeline and get SDP answer
-        sdp_answer, task, runner, metrics_processor, transcript_logger = await create_and_run_pipeline(
-            session=session,
-            sdp_offer=sdp_offer,
-            settings=settings,
-        )
+
+        # Create pipeline and get SDP answer. On failure the session must
+        # not linger in CONNECTING — mark it errored and reap immediately.
+        try:
+            sdp_answer, task, runner, metrics_processor, transcript_logger = await create_and_run_pipeline(
+                session=session,
+                sdp_offer=sdp_offer,
+                settings=settings,
+            )
+        except Exception:
+            session_manager.update_session_status(
+                session.session_id, SessionStatus.ERROR)
+            await session_manager.close_session(session.session_id)
+            raise
         
         # Store pipeline components in session
         session.task = task

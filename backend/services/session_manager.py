@@ -277,16 +277,20 @@ class SessionManager:
     
     async def close_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """
-        Close a session and cleanup resources.
-        
+        Close a session and cleanup resources. Idempotent: the stop
+        endpoint, the WebRTC disconnect handler, the reaper and shutdown
+        can all race here — only the first caller does the teardown.
+
         Returns session summary with metrics.
         """
         session = self._sessions.get(session_id)
         if not session:
             return None
-        
+        if session.status in (SessionStatus.CLOSING, SessionStatus.CLOSED):
+            return session.to_dict()
+
         logger.info(f"Closing session: {session_id}")
-        
+
         # Update status
         session.status = SessionStatus.CLOSING
         session.closed_at = datetime.now()
@@ -323,10 +327,10 @@ class SessionManager:
         
         # Update status and cleanup
         session.status = SessionStatus.CLOSED
-        
-        # Remove from tracking
+
+        # Remove from tracking (pop, not del — a racing closer may have won)
         self._cleanup_session_tracking(session)
-        del self._sessions[session_id]
+        self._sessions.pop(session_id, None)
         
         logger.info(
             f"Session closed: {session_id} | "
@@ -354,6 +358,45 @@ class SessionManager:
             if not self._user_sessions[user_id]:
                 del self._user_sessions[user_id]
     
+    async def cleanup_stale_sessions(
+        self,
+        max_pending_minutes: float = 10.0,
+        max_duration_minutes: float = 30.0,
+    ) -> int:
+        """
+        Reap leaked sessions. Two failure modes both grow memory and cost
+        money unbounded without this:
+        - Sessions created via /start whose client never connected.
+        - Live sessions past the max duration (a wedged WebRTC peer keeps
+          STT/TTS billing running forever).
+
+        Returns the number of sessions closed.
+        """
+        now = datetime.now()
+        to_close: List[str] = []
+
+        for session in list(self._sessions.values()):
+            age_minutes = (now - session.context.created_at).total_seconds() / 60.0
+            if session.status in (SessionStatus.INITIALIZED, SessionStatus.CONNECTING):
+                if age_minutes > max_pending_minutes:
+                    logger.warning(
+                        f"Reaping never-connected session {session.session_id} "
+                        f"(pending {age_minutes:.0f} min)")
+                    to_close.append(session.session_id)
+            elif session.is_active and age_minutes > max_duration_minutes:
+                logger.warning(
+                    f"Reaping over-duration session {session.session_id} "
+                    f"({age_minutes:.0f} min > {max_duration_minutes:.0f} min limit)")
+                to_close.append(session.session_id)
+
+        for session_id in to_close:
+            try:
+                await self.close_session(session_id)
+            except Exception as e:
+                logger.error(f"Failed to reap session {session_id}: {e}")
+
+        return len(to_close)
+
     # =========================================================================
     # Session Queries
     # =========================================================================

@@ -169,17 +169,23 @@ class AILayerClient:
         self,
         request: AILayerRequest,
         endpoint: Optional[str] = None,
+        timeout_s: Optional[float] = None,
+        max_retries: Optional[int] = None,
     ) -> AILayerResponse:
         """
         Send a message to AI Layer and get response.
-        
+
         Args:
             request: AILayerRequest with message and context
             endpoint: Optional custom endpoint (defaults to chat_endpoint)
-            
+            timeout_s: Per-call timeout override. Live voice turns pass a
+                short budget here; the client default suits batch/text calls.
+            max_retries: Per-call retry override (voice turns use 1 — a
+                caller won't wait through exponential backoff).
+
         Returns:
             AILayerResponse with AI-generated text
-            
+
         Raises:
             AILayerConnectionError: If connection fails
             AILayerTimeoutError: If request times out
@@ -187,24 +193,27 @@ class AILayerClient:
         """
         endpoint = endpoint or self.chat_endpoint
         url = f"{self.base_url}{endpoint}"
-        
+        retries = max_retries or self.max_retries
+        effective_timeout = timeout_s or self.timeout_seconds
+
         start_time = time.time()
         self._request_count += 1
-        
+
         logger.debug(
             f"AI Layer request | session={request.session_id} | "
             f"org={request.organisation_id} | message_len={len(request.message)}"
         )
-        
+
         last_error = None
-        for attempt in range(self.max_retries):
+        for attempt in range(retries):
             try:
                 client = await self._get_client()
-                
+
                 response = await client.post(
                     endpoint,
                     json=request.to_dict(),
                     headers=self._get_headers(),
+                    timeout=effective_timeout,
                 )
                 
                 elapsed_ms = (time.time() - start_time) * 1000
@@ -255,23 +264,26 @@ class AILayerClient:
                 
             except httpx.TimeoutException as e:
                 last_error = AILayerTimeoutError(
-                    f"AI Layer request timed out after {self.timeout_seconds}s",
+                    f"AI Layer request timed out after {effective_timeout}s",
                     details={"url": url, "attempt": attempt + 1}
                 )
                 logger.warning(f"AI Layer timeout (attempt {attempt + 1}): {e}")
-                
+
             except AILayerResponseError:
                 raise
-                
+
+            except asyncio.CancelledError:
+                raise
+
             except Exception as e:
                 last_error = AILayerError(
                     f"Unexpected AI Layer error: {e}",
                     details={"url": url, "attempt": attempt + 1}
                 )
                 logger.error(f"AI Layer unexpected error (attempt {attempt + 1}): {e}")
-            
+
             # Exponential backoff before retry
-            if attempt < self.max_retries - 1:
+            if attempt < retries - 1:
                 backoff = min(2 ** attempt, 10)  # Max 10 seconds
                 await asyncio.sleep(backoff)
         

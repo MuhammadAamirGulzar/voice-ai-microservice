@@ -32,7 +32,8 @@ def init_tts_service(google_credentials_path: str):
 def get_tts_service() -> TTSService:
     """Get the TTS service instance."""
     if _tts_service is None:
-        raise HTTPException(status_code=500, detail="TTS service not initialized")
+        # 503, not 500: unconfigured dependency, not a code failure.
+        raise HTTPException(status_code=503, detail="TTS service not initialized")
     return _tts_service
 
 
@@ -104,7 +105,9 @@ async def text_to_speech(request: TTSRequest):
             cost_usd=result.estimated_cost,
             from_cache=result.from_cache,
         )
-        
+
+    except HTTPException:
+        raise   # keep intended status codes (503 when unconfigured)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -148,7 +151,9 @@ async def text_to_speech_audio(request: TTSRequest):
                 "X-From-Cache": str(result.from_cache).lower(),
             }
         )
-        
+
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
